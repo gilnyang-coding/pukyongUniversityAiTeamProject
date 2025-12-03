@@ -104,104 +104,88 @@ class GPTClient:
         content = response.choices[0].message.content.strip()
         content = content.replace("```json", "").replace("```", "").strip()
         return json.loads(content)
+
+def render_inventory_page(gpt_client: GPTClient):
+    st.header("🥗 냉장고 재고 관리")
     
-    def calculate_nutrition_target(self, profile: Dict) -> Dict:
-        prompt = f"""다음 사용자 정보를 바탕으로 일일 권장 영양 섭취량을 계산해주세요.
-
-사용자 정보:
-- 나이: {profile['age']}세
-- 성별: {profile['gender']}
-- 키: {profile['height']}cm
-- 몸무게: {profile['weight']}kg
-- 활동량: {profile['activity_level']}
-
-다음 JSON 형식으로만 응답해주세요 (다른 설명 없이):
-{{
-    "calories": 숫자,
-    "protein": 숫자,
-    "carbs": 숫자,
-    "fat": 숫자
-}}"""
-
-        response = self.client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        
-        content = response.choices[0].message.content.strip()
-        content = content.replace("```json", "").replace("```", "").strip()
-        return json.loads(content)
+    st.subheader("재고 추가")
     
-    def recommend_recipes(self, inventory: List[Dict], nutrition_deficiency: Dict, meal_history: List[Dict]) -> List[Dict]:
-        inventory_str = ", ".join([f"{item['name']} {item['quantity']}{item['unit']}" for item in inventory])
-        deficiency_str = ", ".join([f"{k}: {v:.1f}" for k, v in nutrition_deficiency.items() if v > 0])
-        
-        recent_meals = [meal['recipe_name'] for meal in meal_history[-7:]] if meal_history else []
-        recent_meals_str = ", ".join(recent_meals) if recent_meals else "없음"
-        
-        prompt = f"""다음 조건에 맞는 요리 레시피 3개를 추천해주세요.
-
-보유 식재료: {inventory_str}
-부족한 영양소: {deficiency_str}
-최근 7일 식사 기록: {recent_meals_str}
-
-다음 JSON 형식으로만 응답해주세요 (다른 설명 없이):
-[
-    {{
-        "name": "레시피명",
-        "nutrition": {{"protein": 숫자, "carbs": 숫자, "fat": 숫자, "calories": 숫자}},
-        "ingredients": ["재료명 수량g", "재료명 수량ml", ...],
-        "steps": ["조리과정1", "조리과정2", ...],
-        "youtube_query": "유튜브 검색어"
-    }},
-    ...
-]
-
-보유한 식재료를 최대한 활용하고, 부족한 영양소를 보충할 수 있는 레시피를 추천해주세요."""
-
-        response = self.client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        
-        content = response.choices[0].message.content.strip()
-        content = content.replace("```json", "").replace("```", "").strip()
-        return json.loads(content)
+    tab1, tab2 = st.tabs(["텍스트 입력", "영수증 사진"])
     
-    def recommend_nutrient_rich_recipes(self, deficiency: Dict, inventory: List[Dict]) -> List[Dict]:
-        deficiency_str = ", ".join([f"{k} {v:.1f} 부족" for k, v in deficiency.items()])
-        inventory_str = json.dumps(inventory, ensure_ascii=False)
-        
-        prompt = f"""다음 부족한 영양소를 효과적으로 보충할 수 있는 요리 메뉴 2가지를 추천해주세요.
-
-부족한 상태: {deficiency_str}
-현재 보유 재고: {inventory_str}
-
-다음 JSON 형식으로만 응답해주세요 (다른 설명 없이):
-[
-    {{
-        "name": "메뉴명",
-        "reason": "이 메뉴가 추천된 이유",
-        "ingredients": ["재료명 수량g", "재료명 수량ml", ...],
-        "missing_ingredients": ["부족한재료1", "부족한재료2", ...],
-        "steps": ["조리과정1", "조리과정2", ...],
-        "nutrition": {{"calories": 숫자, "protein": 숫자, "carbs": 숫자, "fat": 숫자}},
-        "youtube_query": "유튜브 검색어"
-    }},
-    ...
-]"""
-
-        response = self.client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
+    with tab1:
+        text_input = st.text_area(
+            "식재료 입력",
+            placeholder="예: 달걀 10개, 우유 1L, 양파 3개",
+            height=100
         )
+        if st.button("텍스트로 재고 추가", type="primary"):
+            if text_input:
+                with st.spinner("식재료 정보를 분석중입니다..."):
+                    try:
+                        parsed_items = gpt_client.parse_inventory_from_text(text_input)
+                        for item in parsed_items:
+                            item['added_date'] = datetime.now().isoformat()
+                            item['expiry_date'] = (datetime.now() + timedelta(days=7)).isoformat()
+                            st.session_state.inventory.append(item)
+                        st.success(f"{len(parsed_items)}개 항목이 추가되었습니다!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"오류 발생: {str(e)}")
+    
+    with tab2:
+        uploaded_file = st.file_uploader("영수증 사진 업로드", type=['png', 'jpg', 'jpeg'])
+        if uploaded_file and st.button("영수증에서 재고 추가", type="primary"):
+            with st.spinner("영수증을 분석중입니다..."):
+                try:
+                    image = Image.open(uploaded_file)
+                    buffered = BytesIO()
+                    image.save(buffered, format="PNG")
+                    image_data = base64.b64encode(buffered.getvalue()).decode()
+                    
+                    parsed_items = gpt_client.parse_inventory_from_image(image_data)
+                    
+                    total_expense = sum(item.get('price', 0) for item in parsed_items)
+                    if total_expense > 0:
+                        st.session_state.expenses.append({
+                            'date': datetime.now().isoformat(),
+                            'amount': total_expense,
+                            'items': ', '.join([item['name'] for item in parsed_items])
+                        })
+                    
+                    for item in parsed_items:
+                        item['added_date'] = datetime.now().isoformat()
+                        item['expiry_date'] = (datetime.now() + timedelta(days=7)).isoformat()
+                        st.session_state.inventory.append(item)
+                    
+                    st.success(f"{len(parsed_items)}개 항목이 추가되었습니다!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"오류 발생: {str(e)}")
+    
+    st.subheader("현재 재고")
+    if st.session_state.inventory:
+        for idx, item in enumerate(st.session_state.inventory):
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                st.write(f"**{item['name']}** - {item['quantity']}{item['unit']}")
+            with col2:
+                st.write(f"추가: {item['added_date'][:10]}")
+            with col3:
+                if st.button("삭제", key=f"del_{idx}"):
+                    st.session_state.inventory.pop(idx)
+                    st.rerun()
+    else:
+        st.info("재고가 비어있습니다. 위에서 재고를 추가해주세요.")
+    
+    st.subheader("💰 지출 내역")
+    if st.session_state.expenses:
+        total = sum(exp['amount'] for exp in st.session_state.expenses)
+        st.metric("총 지출", f"{total:,}원")
         
-        content = response.choices[0].message.content.strip()
-        content = content.replace("```json", "").replace("```", "").strip()
-        return json.loads(content)
+        for exp in st.session_state.expenses[-5:]:
+            st.write(f"**{exp['date'][:10]}** - {exp['amount']:,}원 ({exp['items']})")
+    else:
+        st.info("지출 내역이 없습니다.")
 
 def main():
     st.set_page_config(
@@ -243,66 +227,18 @@ def main():
             else:
                 st.error("❌ API 키는 'sk-'로 시작해야 합니다")
                 st.session_state.api_key = None
+        
+        st.divider()
+        page = st.radio("메뉴", ["재고 관리"], index=0)
     
     if not st.session_state.api_key:
         st.warning("👈 사이드바에서 OpenAI API 키를 입력해주세요.")
         return
 
-    st.header("🍳 영양 계산 및 레시피 추천 테스트")
-    
     gpt_client = GPTClient(st.session_state.api_key)
     
-    tab1, tab2 = st.tabs(["영양 목표 계산", "레시피 추천"])
-    
-    with tab1:
-        st.subheader("프로필 설정")
-        col1, col2 = st.columns(2)
-        with col1:
-            age = st.number_input("나이", min_value=1, value=25)
-            height = st.number_input("키 (cm)", min_value=100, value=175)
-        with col2:
-            gender = st.selectbox("성별", ["male", "female"])
-            weight = st.number_input("몸무게 (kg)", min_value=30, value=70)
-        
-        if st.button("영양 목표 계산", type="primary"):
-            with st.spinner("계산 중..."):
-                try:
-                    profile = {"age": age, "gender": gender, "height": height, "weight": weight, "activity_level": "moderate"}
-                    result = gpt_client.calculate_nutrition_target(profile)
-                    st.success("계산 완료!")
-                    st.json(result)
-                except Exception as e:
-                    st.error(f"오류: {str(e)}")
-    
-    with tab2:
-        st.subheader("레시피 추천 테스트")
-        
-        # 테스트용 재고 추가
-        if st.button("테스트 재고 추가"):
-            st.session_state.inventory = [
-                {"name": "쌀", "quantity": 5, "unit": "kg"},
-                {"name": "달걀", "quantity": 10, "unit": "개"},
-                {"name": "양파", "quantity": 3, "unit": "개"}
-            ]
-            st.success("테스트 재고가 추가되었습니다!")
-        
-        if st.button("레시피 추천받기", type="primary"):
-            if not st.session_state.inventory:
-                st.warning("재고를 먼저 추가해주세요.")
-            else:
-                with st.spinner("추천 중..."):
-                    try:
-                        recipes = gpt_client.recommend_recipes(
-                            st.session_state.inventory,
-                            {"protein": 20, "calories": 500},
-                            []
-                        )
-                        st.success("추천 완료!")
-                        for recipe in recipes:
-                            st.subheader(recipe['name'])
-                            st.json(recipe)
-                    except Exception as e:
-                        st.error(f"오류: {str(e)}")
+    if page == "재고 관리":
+        render_inventory_page(gpt_client)
 
 if __name__ == "__main__":
     main()
