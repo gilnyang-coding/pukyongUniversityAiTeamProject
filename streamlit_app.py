@@ -2,7 +2,7 @@ import streamlit as st
 from openai import OpenAI
 from datetime import datetime, timedelta
 import json
-from typing import Dict, List
+from typing import Dict, List, Optional
 import base64
 from io import BytesIO
 from PIL import Image
@@ -75,6 +75,10 @@ class GPTClient:
 
 **중요한 이름 규칙**: 
 상품명(name)에서 '맛있는', '신선한', '몸에 좋은', '유기농', '국산', '프리미엄' 같은 **수식어, 형용사, 브랜드명은 모두 제거**하고 **핵심 식재료 명칭**만 적어주세요.
+- 예시: '맛있는 부산 어묵' -> '어묵'
+- 예시: '신선한 무항생제 달걀' -> '달걀'
+- 예시: '유기농 흙당근' -> '당근'
+- 예시: '몸에 좋은 제철 시금치' -> '시금치'
 
 다음 JSON 형식으로만 응답해주세요 (다른 설명 없이):
 [
@@ -158,7 +162,13 @@ class GPTClient:
     ...
 ]
 
-보유한 식재료를 최대한 활용하고, 부족한 영양소를 보충할 수 있는 레시피를 추천해주세요."""
+**중요**: 
+- 레시피 재료의 단위는 가급적 '보유 식재료'의 단위와 맞춰주세요.
+- 고체 재료는 그램(g) 단위로 표시: "쌀 200g", "양파 150g", "달걀 50g" (1개 = 약 50g)
+- 액체 재료는 밀리리터(ml) 단위로 표시: "물 500ml", "우유 200ml", "간장 15ml"
+
+보유한 식재료를 최대한 활용하고, 부족한 영양소를 보충할 수 있는 레시피를 추천해주세요.
+최근에 먹은 음식과 중복되지 않도록 해주세요."""
 
         response = self.client.chat.completions.create(
             model="gpt-4o",
@@ -178,7 +188,11 @@ class GPTClient:
 
 **계산 규칙**:
 1. 단위가 서로 다를 경우(개 vs g), **평균 무게**를 기준으로 환산하여 차감하세요.
-2. '개' 단위의 재료는 소수점으로 남기지 말고, 가급적 정수 단위 혹은 0.5단위로 처리하세요.
+    - 예: '양파 150g' 사용, 재고가 '양파 3개'라면 -> 양파 1개(약 200g)를 사용한 것으로 간주하여 '양파 2개' 남음으로 처리.
+    - 예: '달걀 100g' 사용, 재고가 '달걀 10개'라면 -> 달걀 2개(50g*2) 차감.
+
+2. '개' 단위의 재료는 소수점으로 남기지 말고, 가급적 정수 단위 혹은 0.5단위로 처리하세요. (예: 2.2개 -> 2개)
+3. 액체류는 ml 단위로 정확히 계산하세요.
 
 다음 JSON 형식으로만 응답해주세요 (다른 설명 없이):
 [
@@ -186,7 +200,8 @@ class GPTClient:
     ...
 ]
 
-수량이 0 이하가 된 재료는 목록에서 제외해주세요."""
+수량이 0 이하가 된 재료는 목록에서 제외해주세요.
+원래 단위(kg, L, 개)를 유지하되, 계산은 환산해서 해주세요."""
 
         response = self.client.chat.completions.create(
             model="gpt-4o",
@@ -210,6 +225,48 @@ class GPTClient:
         
         return updated_items
 
+    def recommend_nutrient_rich_recipes(self, deficiency: Dict, inventory: List[Dict]) -> List[Dict]:
+        deficiency_str = ", ".join([f"{k} {v:.1f} 부족" for k, v in deficiency.items()])
+        inventory_str = json.dumps(inventory, ensure_ascii=False)
+        
+        prompt = f"""다음 부족한 영양소를 효과적으로 보충할 수 있는 요리 메뉴 2가지를 추천해주세요.
+
+부족한 상태: {deficiency_str}
+현재 보유 재고: {inventory_str}
+
+조건:
+1. 부족한 영양소가 풍부한 식재료를 주재료로 사용해야 합니다.
+2. 각 메뉴가 왜 이 영양소 보충에 좋은지 'reason'에 한 문장으로 설명해주세요.
+3. 재료는 반드시 구체적인 수량(g, ml, 개)을 포함해주세요.
+4. **현재 보유 재고와 비교하여 부족한 재료가 있다면 'missing_ingredients' 리스트에 담아주세요.** (재고가 충분하면 빈 리스트)
+
+다음 JSON 형식으로만 응답해주세요 (다른 설명 없이):
+[
+    {{
+        "name": "메뉴명",
+        "reason": "이 메뉴가 추천된 이유",
+        "ingredients": ["재료명 수량g", "재료명 수량ml", ...],
+        "missing_ingredients": ["부족한재료1", "부족한재료2", ...],
+        "steps": ["조리과정1", "조리과정2", ...],
+        "nutrition": {{"calories": 숫자, "protein": 숫자, "carbs": 숫자, "fat": 숫자}},
+        "youtube_query": "유튜브 검색어"
+    }},
+    ...
+]"""
+
+        response = self.client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        
+        content = response.choices[0].message.content.strip()
+        content = content.replace("```json", "").replace("```", "").strip()
+        return json.loads(content)
+
+# -------------------------------------------------------------------------
+# UI 렌더링 함수
+# -------------------------------------------------------------------------
 def render_recipe_ui(gpt_client, recipe, index, key_suffix, origin_list_key=None, show_use_btn=True, show_delete_btn=False):
     with st.expander(f"🍽️ {recipe['name']}", expanded=True):
         col1, col2 = st.columns([2, 1])
@@ -241,6 +298,7 @@ def render_recipe_ui(gpt_client, recipe, index, key_suffix, origin_list_key=None
                 unit = unit_map.get(k, "")
                 st.metric(kor_key, f"{v} {unit}")
         
+        # 버튼 영역
         col_btn1, col_btn2 = st.columns(2)
         
         with col_btn1:
@@ -257,6 +315,14 @@ def render_recipe_ui(gpt_client, recipe, index, key_suffix, origin_list_key=None
 
 현재 재고: {json.dumps(st.session_state.inventory, ensure_ascii=False)}
 레시피 재료: {json.dumps(recipe['ingredients'], ensure_ascii=False)}
+
+**핵심 판단 기준 (단위 변환)**:
+1. 재고는 '개' 단위이고 레시피는 'g/ml' 단위일 경우, 아래 평균 무게를 기준으로 변환하여 판단하세요.
+    - 양파 1개 ≈ 200g, 감자 1개 ≈ 150g, 당근 1개 ≈ 150g, 달걀 1개 ≈ 50g, 대파 1대 ≈ 80g, 마늘 1쪽 ≈ 5g
+
+2. 예시: 
+    - 재고 '양파 1개' vs 레시피 '양파 150g' -> **충분함 (true)**
+    - 재고 '양파 1개' vs 레시피 '양파 300g' -> 부족함 (false)
 
 다음 JSON 형식으로만 응답해주세요:
 {{
@@ -463,6 +529,47 @@ def render_nutrition_page(gpt_client: GPTClient):
     with col4:
         st.metric("지방", f"{target['fat']:.1f} g")
     
+    deficiency = st.session_state.nutrition_status['deficiency']
+    
+    if any(v > 0 for v in deficiency.values()):
+        st.divider()
+        st.subheader("⚠️ 부족한 영양소 채우기")
+        
+        deficient_items = {k: v for k, v in deficiency.items() if v > 0}
+        
+        cols = st.columns(2)
+        for idx, (nutrient, value) in enumerate(deficient_items.items()):
+            name_map = {"calories": "칼로리", "protein": "단백질", "carbs": "탄수화물", "fat": "지방"}
+            unit_map = {"calories": "kcal", "protein": "g", "carbs": "g", "fat": "g"}
+            
+            korean_name = name_map.get(nutrient, nutrient)
+            unit = unit_map.get(nutrient, "")
+            
+            with cols[idx % 2]:
+                st.info(f"**{korean_name}** 부족! (목표 대비 -{value:.1f}{unit})")
+                
+                target_val = st.session_state.nutrition_status['daily_target'][nutrient]
+                if target_val > 0:
+                    current_val = max(0, target_val - value)
+                    ratio = min(1.0, current_val / target_val)
+                    st.progress(ratio, text=f"현재 섭취: {ratio*100:.0f}%")
+
+        st.write("") 
+        if st.button("✨ 부족한 영양소를 채워줄 메뉴 추천받기", type="primary", use_container_width=True):
+            with st.spinner("영양 밸런스를 위한 최적의 메뉴를 찾고 있습니다..."):
+                try:
+                    recipes = gpt_client.recommend_nutrient_rich_recipes(deficient_items, st.session_state.inventory)
+                    st.session_state.nutrient_recipes = recipes
+                except Exception as e:
+                    st.error(f"추천 중 오류 발생: {str(e)}")
+
+        if 'nutrient_recipes' in st.session_state and st.session_state.nutrient_recipes:
+            st.write("---")
+            st.write("### 🥗 추천 보양 메뉴")
+            
+            for idx, recipe in enumerate(st.session_state.nutrient_recipes):
+                render_recipe_ui(gpt_client, recipe, idx, "nutrient", origin_list_key='nutrient_recipes', show_use_btn=True, show_delete_btn=False)
+
     st.divider()
     st.subheader("📅 최근 식사 기록")
     
@@ -553,6 +660,7 @@ def main():
         st.title("tAIste")
         st.caption("똑똑한 냉장고 관리 & 맞춤 메뉴 추천")
         
+        # [수정됨] 사이드바에서 API 키 입력 (기본값 제거)
         api_key = st.text_input(
             "OpenAI API Key",
             type="password",
@@ -564,6 +672,7 @@ def main():
             if api_key.startswith("sk-"):
                 try:
                     test_client = OpenAI(api_key=api_key)
+                    # 간단한 테스트 호출로 유효성 검사
                     test_client.chat.completions.create(
                         model="gpt-4o-mini",
                         messages=[{"role": "user", "content": "Hi"}],
@@ -579,20 +688,29 @@ def main():
                 st.session_state.api_key = None
         
         st.divider()
-        page = st.radio("메뉴", ["재고 관리", "메뉴 추천", "영양 분석"], index=0)
+        
+        page = st.radio(
+            "메뉴",
+            ["재고 관리", "메뉴 추천", "영양 분석"], 
+            index=0
+        )
     
     if not st.session_state.api_key:
         st.warning("👈 사이드바에서 OpenAI API 키를 입력해주세요.")
         return
 
-    gpt_client = GPTClient(st.session_state.api_key)
-    
-    if page == "재고 관리":
-        render_inventory_page(gpt_client)
-    elif page == "메뉴 추천":
-        render_recommendation_page(gpt_client)
-    elif page == "영양 분석":
-        render_nutrition_page(gpt_client)
+    try:
+        gpt_client = GPTClient(st.session_state.api_key)
+        
+        if page == "재고 관리":
+            render_inventory_page(gpt_client)
+        elif page == "영양 분석":
+            render_nutrition_page(gpt_client)
+        elif page == "메뉴 추천":
+            render_recommendation_page(gpt_client)
+            
+    except Exception as e:
+        st.error(f"API 연결 오류: {str(e)}")
 
 if __name__ == "__main__":
     main()
