@@ -489,12 +489,12 @@ def render_nutrition_page(gpt_client: GPTClient):
             age = st.number_input("나이", min_value=1, max_value=120, value=st.session_state.user_profile['age'])
             height = st.number_input("키 (cm)", min_value=100, max_value=250, value=st.session_state.user_profile['height'])
         with col2:
-            gender = st.selectbox("성별", ["male", "female"], index=0 if st.session_state.user_profile['gender'] == "male" else 1)
+            gender = st.selectbox("성별", ["남성", "여성"], index=0 if st.session_state.user_profile['gender'] == "male" else 1)
             weight = st.number_input("몸무게 (kg)", min_value=30, max_value=200, value=st.session_state.user_profile['weight'])
         
         activity_level = st.selectbox(
             "활동량",
-            ["sedentary", "light", "moderate", "active", "very_active"],
+            ["매우 적음", "적음", "보통", "활동적", "매우 활동적"],
             index=2
         )
         
@@ -589,7 +589,7 @@ def render_nutrition_page(gpt_client: GPTClient):
                 with c2:
                     n = meal['nutrition']
                     st.write(f"{n['calories']} kcal")
-                    st.caption(f"C:{n['carbs']} P:{n['protein']} F:{n['fat']}")
+                    st.caption(f"C:{n['탄수화물']} P:{n['단백질']} F:{n['지방']}")
             st.divider()
     else:
         st.info("아직 식사 기록이 없습니다. 메뉴 추천에서 요리를 완료해보세요!")
