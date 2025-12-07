@@ -589,7 +589,7 @@ def render_nutrition_page(gpt_client: GPTClient):
                 with c2:
                     n = meal['nutrition']
                     st.write(f"{n['calories']} kcal")
-                    st.caption(f"C:{n['탄수화물']} P:{n['단백질']} F:{n['지방']}")
+                    st.caption(f"탄수화물:{n['carbs']} 단백질:{n['protein']} 지방:{n['fat']}")
             st.divider()
     else:
         st.info("아직 식사 기록이 없습니다. 메뉴 추천에서 요리를 완료해보세요!")
